@@ -1,25 +1,20 @@
-// Per-frame orchestrator. Subscribes to useScreenCapture and:
-//   1. Skips if the frame is identical to the previous one (perceptual-hash gate)
-//   2. Calls the edge function `analyze-poker` (mode: full-frame) to get a
-//      complete GameState — this is the v1 default while local T1 templates are
-//      still being calibrated.
-//   3. If `myTurn` is true, calls the strategy mode for a Recommendation.
-//   4. Always updates the session store with the latest GameState so the UI
-//      reflects what the AI sees on the table, even on opponents' turns.
+// Per-frame orchestrator. Runs whenever capture is sharing (no longer gated on
+// session.isActive — the session is for cloud logging, not UI rendering).
+//
+// Pipeline per frame:
+//   1. Skip if dataUrl is missing or fingerprint matches the previous frame.
+//   2. Set a "Reading the table…" placeholder so the UI shows activity.
+//   3. Call edge fn `analyze-poker` (mode: full-frame) for a complete GameState.
+//   4. If hero's turn, call mode: strategy for a Recommendation.
+//   5. Surface counts/errors on a debug store so the UI can show what happened.
 import { useCallback, useEffect, useRef } from "react";
 import type { GameState, Recommendation } from "@/types/game";
 import { useSessionStore } from "@/store/session";
 import { useSettings } from "@/store/settings";
+import { useDebug } from "@/store/debug";
 import type { CaptureFrame, UseScreenCaptureReturn } from "./useScreenCapture";
 import { extractFull } from "@/vision/extractFull";
 import { supabase } from "@/lib/supabase";
-
-const WAITING_REC: Recommendation = {
-  action: "wait",
-  reasoning: "Not your turn — watching the table.",
-  confidence: 0,
-  source: "fallback",
-};
 
 const SCANNING_REC: Recommendation = {
   action: "wait",
@@ -28,10 +23,14 @@ const SCANNING_REC: Recommendation = {
   source: "fallback",
 };
 
-// Cheap, non-cryptographic frame fingerprint built from the JPEG dataUrl.
-// Identical capture → identical string → we skip the round trip.
+const WAITING_REC: Recommendation = {
+  action: "wait",
+  reasoning: "Not your turn — watching the table.",
+  confidence: 0,
+  source: "fallback",
+};
+
 function fingerprintDataUrl(dataUrl: string): string {
-  // Sample evenly across the base64 body.
   const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
   const len = base64.length;
   if (len < 64) return base64;
@@ -46,37 +45,52 @@ function fingerprintDataUrl(dataUrl: string): string {
 export function useFrameLoop(capture: UseScreenCaptureReturn) {
   const setRecommendation = useSessionStore((s) => s.setRecommendation);
   const setGameState = useSessionStore((s) => s.setGameState);
-  const isActive = useSessionStore((s) => s.isActive);
   const sessionId = useSessionStore((s) => s.id);
   const platform = useSettings((s) => s.platform);
   const heroName = useSettings((s) => s.heroName);
   const riskProfile = useSettings((s) => s.riskProfile);
+
+  const debug = useDebug();
 
   const lastFingerprintRef = useRef<string>("");
   const inflightRef = useRef(false);
 
   const handleFrame = useCallback(
     async (f: CaptureFrame) => {
-      if (!f.dataUrl) return;
-      if (inflightRef.current) return;
+      debug.bumpFramesSeen();
+      if (!f.dataUrl) {
+        debug.setStatus("err", "no dataUrl");
+        return;
+      }
+      if (inflightRef.current) {
+        debug.setStatus("skip", "in-flight");
+        return;
+      }
 
       const fp = fingerprintDataUrl(f.dataUrl);
-      if (fp === lastFingerprintRef.current) return; // unchanged frame
+      if (fp === lastFingerprintRef.current) {
+        debug.setStatus("skip", "frame unchanged");
+        return;
+      }
       lastFingerprintRef.current = fp;
 
       inflightRef.current = true;
-      // Optimistic placeholder so the user sees activity.
+      debug.setStatus("calling", "vision…");
+      // Show activity immediately so the UI doesn't sit on the null fallback.
       setRecommendation(SCANNING_REC);
 
       try {
+        const t0 = Date.now();
         const res = await extractFull({
           dataUrl: f.dataUrl,
           platform,
           heroName,
           sessionId: sessionId ?? undefined,
         });
+        const dt = Date.now() - t0;
 
         if (!res.ok || !res.gameState) {
+          debug.setStatus("err", `vision: ${res.error ?? "no read"} (${dt}ms)`);
           setRecommendation({
             action: "wait",
             reasoning: `Vision: ${res.error ?? "no read"}`,
@@ -88,12 +102,18 @@ export function useFrameLoop(capture: UseScreenCaptureReturn) {
 
         const gs: GameState = res.gameState;
         setGameState(gs);
+        debug.setStatus(
+          "ok",
+          `vision ${dt}ms · ${gs.street} · pot ${gs.pot} · myTurn ${gs.myTurn}`,
+        );
 
-        // No active hand visible? Don't burn a strategy call.
         if (gs.street === "between" || gs.street === "showdown") {
           setRecommendation({
             action: "wait",
-            reasoning: gs.street === "showdown" ? "Showdown — table resolving." : "Between hands — waiting for deal.",
+            reasoning:
+              gs.street === "showdown"
+                ? "Showdown — table resolving."
+                : "Between hands — waiting for deal.",
             confidence: 0,
             source: "fallback",
           });
@@ -105,15 +125,15 @@ export function useFrameLoop(capture: UseScreenCaptureReturn) {
           return;
         }
 
-        // Hero's turn — ask for a recommendation.
-        // Local pre-computed math kept minimal here; the engine modules can
-        // enrich this once the local pipeline is wired in.
-        const potOdds = gs.toCall > 0 ? Math.round((gs.toCall / (gs.pot + gs.toCall)) * 100) : 0;
+        // Hero's turn — fetch a recommendation.
+        const potOdds =
+          gs.toCall > 0 ? Math.round((gs.toCall / (gs.pot + gs.toCall)) * 100) : 0;
         const sprValue = gs.pot > 0 ? gs.myStack / gs.pot : 999;
         const sprBucket = sprValue <= 4 ? "low" : sprValue <= 13 ? "mid" : "high";
         const math = {
           potOdds,
-          mdf: gs.toCall > 0 ? Math.round((gs.pot / (gs.pot + gs.toCall)) * 100) : 0,
+          mdf:
+            gs.toCall > 0 ? Math.round((gs.pot / (gs.pot + gs.toCall)) * 100) : 0,
           sprBucket,
           spr: Number.isFinite(sprValue) ? Math.round(sprValue * 10) / 10 : null,
           equityVsRange: null,
@@ -121,6 +141,8 @@ export function useFrameLoop(capture: UseScreenCaptureReturn) {
           preflopChartHint: null,
         };
 
+        debug.setStatus("calling", "strategy…");
+        const t1 = Date.now();
         const { data, error } = await supabase.functions.invoke("analyze-poker", {
           body: {
             mode: "strategy",
@@ -131,7 +153,9 @@ export function useFrameLoop(capture: UseScreenCaptureReturn) {
             context: sessionId ? { sessionId } : undefined,
           },
         });
+        const dt2 = Date.now() - t1;
         if (error) {
+          debug.setStatus("err", `strategy: ${error.message} (${dt2}ms)`);
           setRecommendation({
             action: "wait",
             reasoning: `Strategy error: ${error.message}`,
@@ -141,6 +165,7 @@ export function useFrameLoop(capture: UseScreenCaptureReturn) {
           return;
         }
         if (data?.ok && data.recommendation) {
+          debug.setStatus("ok", `strategy ${dt2}ms · ${data.recommendation.action}`);
           setRecommendation({
             ...(data.recommendation as Recommendation),
             potOdds: data.recommendation.potOdds ?? potOdds,
@@ -150,6 +175,7 @@ export function useFrameLoop(capture: UseScreenCaptureReturn) {
           });
           return;
         }
+        debug.setStatus("err", data?.error ?? "no recommendation");
         setRecommendation({
           action: "wait",
           reasoning: data?.error ?? "no recommendation",
@@ -157,6 +183,7 @@ export function useFrameLoop(capture: UseScreenCaptureReturn) {
           source: "fallback",
         });
       } catch (err) {
+        debug.setStatus("err", String(err));
         setRecommendation({
           action: "wait",
           reasoning: `Loop error: ${String(err)}`,
@@ -167,12 +194,20 @@ export function useFrameLoop(capture: UseScreenCaptureReturn) {
         inflightRef.current = false;
       }
     },
-    [platform, heroName, riskProfile, sessionId, setGameState, setRecommendation],
+    [
+      platform,
+      heroName,
+      riskProfile,
+      sessionId,
+      setGameState,
+      setRecommendation,
+      debug,
+    ],
   );
 
   useEffect(() => {
-    if (!isActive) return;
+    if (!capture.isSharing) return;
     const unsub = capture.subscribe(handleFrame);
     return () => unsub();
-  }, [capture, isActive, handleFrame]);
+  }, [capture, handleFrame]);
 }

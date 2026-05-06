@@ -16,6 +16,7 @@ import { HoleCards } from "@/components/overlay/HoleCards";
 import { BankrollPill } from "@/components/overlay/BankrollPill";
 import { WatchControls } from "@/components/overlay/WatchControls";
 import { TablePulse } from "@/components/overlay/TablePulse";
+import { DebugStrip } from "@/components/overlay/DebugStrip";
 
 import { HandLog } from "@/components/side/HandLog";
 import { SessionStats } from "@/components/side/SessionStats";
@@ -112,6 +113,7 @@ export default function Index() {
               <HudCard recommendation={recommendation} />
               <EquityRow recommendation={recommendation} />
               <ActionStrip gameState={gameState} />
+              <DebugStrip />
             </section>
 
             {/* Column 2 — live table + hand log */}
