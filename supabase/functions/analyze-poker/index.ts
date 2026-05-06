@@ -117,7 +117,15 @@ interface StrategyRequest {
   context?: { sessionId?: string; [k: string]: unknown };
 }
 
-type Req = VisionRepairRequest | StrategyRequest;
+interface FullFrameRequest {
+  mode: "full-frame";
+  dataUrl: string; // jpeg/png data url of the captured table frame
+  platform?: string;
+  heroName?: string | null;
+  context?: { sessionId?: string; [k: string]: unknown };
+}
+
+type Req = VisionRepairRequest | StrategyRequest | FullFrameRequest;
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -181,6 +189,12 @@ serve(async (req: Request): Promise<Response> => {
         recommendation: result.recommendation,
         cached: result.cacheHit === true,
       });
+    }
+
+    if (body.mode === "full-frame") {
+      const result = await handleFullFrame(body, openaiKey);
+      void bumpSessionCost(admin, body.context?.sessionId, "t2");
+      return jsonResponse(result);
     }
 
     return jsonResponse({ ok: false, error: "unknown mode" }, 400);
@@ -255,6 +269,83 @@ async function handleVisionRepair(
   }
 
   return { ok: true, fields: out };
+}
+
+// ---------------------------------------------------------------------------
+// Full-frame extraction (used when local T1 isn't calibrated yet)
+// ---------------------------------------------------------------------------
+
+const FULL_FRAME_SYSTEM_PROMPT = `You are PokerWatch's vision module. Extract a complete GameState from a screenshot of a poker table (Stake.us NLHE or similar).
+
+Return STRICT JSON ONLY (no prose, no markdown). Shape:
+
+{
+  "platform": "stake.us" | "generic",
+  "tableId": <string|null>,
+  "blinds": { "sb": <int>, "bb": <int> },
+  "ante": <int>,
+  "stakeCurrency": "GC" | "SC" | "USD" | "chips",
+  "street": "preflop" | "flop" | "turn" | "river" | "showdown" | "between",
+  "pot": <int>,
+  "toCall": <int>,
+  "board": [<card>, ...],          // 0..5 cards visible on the felt
+  "myHole": [<card>, <card>] | [], // hero's cards if visible
+  "mySeat": <int|null>,
+  "myStack": <int>,
+  "seats": [
+    { "seatNum": <int>, "name": <string|null>, "stack": <int>, "inHand": <bool>, "hasActed": <bool>, "lastAction": <string|null>, "isHero": <bool>, "isDealer": <bool> }
+  ],
+  "actionOnSeat": <int|null>,
+  "myTurn": <bool>,
+  "actionHistory": [],
+  "confidence": <0..1 number>,
+  "capturedAt": <ms epoch>
+}
+
+Card encoding: 2-char strings, rank then lowercase suit, e.g. "As" "Kh" "Td" "9c" "2s".
+Hero is identified by: (a) the seat whose hole cards are face-up (highest priority), (b) screen-name that starts with HERO_NAME (Stake truncates names like "Koromaja..."), (c) bottom-center seat as fallback. The face-up-cards rule WINS over name matching.
+If a value is unreadable, return null (or 0 for numeric pot/stack, [] for arrays). Do NOT hallucinate cards.
+Always include all 9 seats; mark unoccupied seats with name=null and stack=0 and inHand=false.
+"capturedAt" should equal the value provided in the user message.`;
+
+async function handleFullFrame(
+  body: FullFrameRequest,
+  openaiKey: string,
+): Promise<{ ok: true; gameState: Record<string, unknown> }> {
+  if (!body.dataUrl || !body.dataUrl.startsWith("data:image/")) {
+    throw new HttpError(400, "missing or invalid dataUrl");
+  }
+
+  const userParts: Array<Record<string, unknown>> = [
+    {
+      type: "text",
+      text:
+        `HERO_NAME: ${body.heroName ?? "(unknown)"}\n` +
+        `PLATFORM_HINT: ${body.platform ?? "stake.us"}\n` +
+        `capturedAt: ${Date.now()}\n` +
+        `Read the table and return the GameState JSON. Hero is the seat whose hole cards are face-up; if HERO_NAME matches a seat label, that overrides.`,
+    },
+    {
+      type: "image_url",
+      image_url: { url: body.dataUrl },
+    },
+  ];
+
+  const openaiBody: Record<string, unknown> = {
+    model: OPENAI_MODEL,
+    messages: [
+      { role: "system", content: FULL_FRAME_SYSTEM_PROMPT },
+      { role: "user", content: userParts },
+    ],
+    response_format: { type: "json_object" },
+  };
+
+  const raw = await callOpenAI(openaiKey, openaiBody);
+  const parsed = parseJsonContent(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new HttpError(502, "full-frame response was not a JSON object");
+  }
+  return { ok: true, gameState: parsed as Record<string, unknown> };
 }
 
 // ---------------------------------------------------------------------------

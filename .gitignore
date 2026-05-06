@@ -24,3 +24,5 @@ coverage
 .supabase/.temp
 .supabase/config.json
 .supabase/keys.json
+
+.vercel

@@ -15,6 +15,7 @@ import { BoardStrip } from "@/components/overlay/BoardStrip";
 import { HoleCards } from "@/components/overlay/HoleCards";
 import { BankrollPill } from "@/components/overlay/BankrollPill";
 import { WatchControls } from "@/components/overlay/WatchControls";
+import { TablePulse } from "@/components/overlay/TablePulse";
 
 import { HandLog } from "@/components/side/HandLog";
 import { SessionStats } from "@/components/side/SessionStats";
@@ -33,6 +34,7 @@ import { status as bankrollStatus } from "@/engine/bankroll";
 export default function Index() {
   const captureIntervalMs = useSettings((s) => s.captureIntervalMs);
   const bankrollChips = useSettings((s) => s.bankrollChips);
+  const heroName = useSettings((s) => s.heroName);
 
   const capture = useScreenCapture({ intervalMs: captureIntervalMs });
   useFrameLoop(capture);
@@ -112,8 +114,9 @@ export default function Index() {
               <ActionStrip gameState={gameState} />
             </section>
 
-            {/* Column 2 — hand log */}
-            <section className="xl:col-start-2">
+            {/* Column 2 — live table + hand log */}
+            <section className="space-y-4 xl:col-start-2">
+              <TablePulse gameState={gameState} heroName={heroName} />
               <HandLog />
             </section>
 
