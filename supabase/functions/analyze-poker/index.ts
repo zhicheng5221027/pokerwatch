@@ -307,8 +307,10 @@ Return STRICT JSON ONLY (no prose, no markdown). Shape:
 
 Card encoding: 2-char strings, rank then lowercase suit, e.g. "As" "Kh" "Td" "9c" "2s".
 Hero is identified by: (a) the seat whose hole cards are face-up (highest priority), (b) screen-name that starts with HERO_NAME (Stake truncates names like "Koromaja..."), (c) bottom-center seat as fallback. The face-up-cards rule WINS over name matching.
-If a value is unreadable, return null (or 0 for numeric pot/stack, [] for arrays). Do NOT hallucinate cards.
-Always include all 9 seats; mark unoccupied seats with name=null and stack=0 and inHand=false.
+
+ABSOLUTE RULE — DO NOT HALLUCINATE. If a value is unreadable in the image, return null (or 0 for numeric, [] for arrays). NEVER invent player names, card values, pot sizes, or stacks that you can't actually see in the screenshot. Better to return null than to guess. Names on Stake are usernames like "Koromajames", "RiverRat86", "Andconnect", "Spazzym3" — only return a name if you can clearly read those exact characters; otherwise null.
+
+Always include all 9 seats; mark unoccupied or unreadable seats with name=null, stack=0, inHand=false.
 "capturedAt" should equal the value provided in the user message.`;
 
 async function handleFullFrame(
