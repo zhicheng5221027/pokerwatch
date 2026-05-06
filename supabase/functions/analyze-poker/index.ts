@@ -21,7 +21,10 @@ import { handlePreflight, jsonResponse } from "../_shared/cors.ts";
 // Constants
 // ---------------------------------------------------------------------------
 
-const OPENAI_MODEL = "gpt-5.5"; // requested verbatim by user
+// gpt-5.5 vision was timing out >30s on real (~150 KB) Stake.us screenshots.
+// gpt-4o-mini is vision-capable, ~10× faster, and ~30× cheaper for this use.
+// Override with the OPENAI_MODEL env var if needed.
+const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") ?? "gpt-4o-mini";
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
 
 const STRATEGY_SYSTEM_PROMPT = `You are PokerWatch, a No-Limit Hold'em coach. You receive structured
