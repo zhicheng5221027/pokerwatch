@@ -37,7 +37,7 @@ export default function Index() {
   const bankrollChips = useSettings((s) => s.bankrollChips);
   const heroName = useSettings((s) => s.heroName);
 
-  const capture = useScreenCapture({ intervalMs: captureIntervalMs });
+  const capture = useScreenCapture({ intervalMs: captureIntervalMs, maxSide: 768, jpegQuality: 0.6 });
   useFrameLoop(capture);
 
   const session = useSession();

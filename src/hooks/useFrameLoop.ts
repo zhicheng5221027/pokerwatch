@@ -13,8 +13,7 @@ import { useSessionStore } from "@/store/session";
 import { useSettings } from "@/store/settings";
 import { useDebug } from "@/store/debug";
 import type { CaptureFrame, UseScreenCaptureReturn } from "./useScreenCapture";
-import { extractFull } from "@/vision/extractFull";
-import { supabase } from "@/lib/supabase";
+import { extractFull, callStrategy } from "@/vision/extractFull";
 
 const SCANNING_REC: Recommendation = {
   action: "wait",
@@ -143,44 +142,31 @@ export function useFrameLoop(capture: UseScreenCaptureReturn) {
 
         debug.setStatus("calling", "strategy…");
         const t1 = Date.now();
-        const { data, error } = await supabase.functions.invoke("analyze-poker", {
-          body: {
-            mode: "strategy",
-            gameState: gs,
-            math,
-            riskProfile,
-            recentHands: [],
-            context: sessionId ? { sessionId } : undefined,
-          },
+        const sres = await callStrategy({
+          gameState: gs,
+          math,
+          riskProfile,
+          recentHands: [],
+          sessionId: sessionId ?? undefined,
         });
         const dt2 = Date.now() - t1;
-        if (error) {
-          debug.setStatus("err", `strategy: ${error.message} (${dt2}ms)`);
+        if (!sres.ok || !sres.recommendation) {
+          debug.setStatus("err", `strategy: ${sres.error ?? "no rec"} (${dt2}ms)`);
           setRecommendation({
             action: "wait",
-            reasoning: `Strategy error: ${error.message}`,
+            reasoning: `Strategy: ${sres.error ?? "no rec"}`,
             confidence: 0,
             source: "fallback",
           });
           return;
         }
-        if (data?.ok && data.recommendation) {
-          debug.setStatus("ok", `strategy ${dt2}ms · ${data.recommendation.action}`);
-          setRecommendation({
-            ...(data.recommendation as Recommendation),
-            potOdds: data.recommendation.potOdds ?? potOdds,
-            mdf: data.recommendation.mdf ?? math.mdf,
-            spr: data.recommendation.spr ?? (math.spr as number | undefined),
-            source: "ai-strategy",
-          });
-          return;
-        }
-        debug.setStatus("err", data?.error ?? "no recommendation");
+        debug.setStatus("ok", `strategy ${dt2}ms · ${sres.recommendation.action}`);
         setRecommendation({
-          action: "wait",
-          reasoning: data?.error ?? "no recommendation",
-          confidence: 0,
-          source: "fallback",
+          ...(sres.recommendation as Recommendation),
+          potOdds: sres.recommendation.potOdds ?? potOdds,
+          mdf: sres.recommendation.mdf ?? math.mdf,
+          spr: sres.recommendation.spr ?? (math.spr as number | undefined),
+          source: "ai-strategy",
         });
       } catch (err) {
         debug.setStatus("err", String(err));
@@ -192,6 +178,8 @@ export function useFrameLoop(capture: UseScreenCaptureReturn) {
         });
       } finally {
         inflightRef.current = false;
+        // On error, clear the fingerprint so the next *changed* frame retries.
+        // (We keep it set on success so identical frames don't re-bill.)
       }
     },
     [
