@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 25% 7%;
+    --foreground: 210 20% 96%;
+
+    --card: 222 24% 9%;
+    --card-foreground: 210 20% 96%;
+
+    --popover: 222 26% 8%;
+    --popover-foreground: 210 20% 96%;
+
+    --primary: 158 70% 48%;
+    --primary-foreground: 222 30% 8%;
+
+    --secondary: 222 20% 14%;
+    --secondary-foreground: 210 20% 96%;
+
+    --muted: 222 18% 14%;
+    --muted-foreground: 215 14% 65%;
+
+    --accent: 220 70% 56%;
+    --accent-foreground: 210 20% 98%;
+
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 210 20% 98%;
+
+    --success: 158 70% 48%;
+    --success-foreground: 222 30% 8%;
+
+    --warning: 38 92% 55%;
+    --warning-foreground: 222 30% 8%;
+
+    --border: 222 18% 17%;
+    --input: 222 18% 14%;
+    --ring: 158 70% 48%;
+
+    --felt: 215 60% 26%;
+
+    --radius: 0.65rem;
+  }
+
+  * { @apply border-border; }
+  html, body, #root { height: 100%; }
+  body { @apply bg-background text-foreground antialiased font-sans; font-feature-settings: "ss01", "cv11"; }
+
+  /* tabular numbers wherever we render stack/pot/equity */
+  .tabular { font-variant-numeric: tabular-nums; }
+}
